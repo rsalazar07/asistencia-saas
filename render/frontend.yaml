@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: asistencia-frontend
+    env: node
+    buildCommand: cd apps/frontend && npm install && npm run build
+    startCommand: cd apps/frontend && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_PUBLIC_API_URL
+        value: https://asistencia-backend.onrender.com/api

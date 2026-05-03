@@ -1,0 +1,446 @@
+// ==========================================================================
+// ASISTENCIA SaaS - Prisma Schema (Multi-tenant)
+// ==========================================================================
+// Database: PostgreSQL
+// Strategy: Shared Table (Row-Level Isolation via tenantId)
+// ==========================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================================================
+// ENUMS
+// ==========================================================================
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  TRIAL
+  CANCELLED
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  TENANT_ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  TERMINATED
+}
+
+enum AttendanceStatus {
+  ON_TIME
+  LATE
+  EARLY_LEAVE
+  OVERTIME
+  MISSING
+}
+
+enum ProjectStatus {
+  ACTIVE
+  COMPLETED
+  ON_HOLD
+  CANCELLED
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  CHECK_IN
+  CHECK_OUT
+  EXPORT
+  APPROVE
+  REJECT
+}
+
+// ==========================================================================
+// TENANT (EMPRESA)
+// ==========================================================================
+
+model Tenant {
+  id             String        @id @default(uuid()) @db.Uuid
+  name           String        @unique
+  legalName      String?
+  rut            String?
+  email          String?
+  phone          String?
+  address        String?
+  logoUrl        String?
+  status         TenantStatus  @default(TRIAL)
+  maxEmployees   Int           @default(50)
+  maxProjects    Int           @default(20)
+  trialEndsAt    DateTime?
+  subscriptionId String?
+  timezone       String        @default("America/Lima")
+  config         Json?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  users             User[]
+  employees         Employee[]
+  projects          Project[]
+  workSchedules     WorkSchedule[]
+  geoFences         GeoFence[]
+  auditLogs         AuditLog[]
+  attendances       Attendance[]
+  overtimeRequests  OvertimeRequest[]
+  projectAssignments ProjectAssignment[]
+
+  @@map("tenants")
+}
+
+// ==========================================================================
+// USUARIOS
+// ==========================================================================
+
+model User {
+  id                   String     @id @default(uuid()) @db.Uuid
+  tenantId             String     @db.Uuid
+  email                String     @unique
+  passwordHash         String
+  firstName            String
+  lastName             String
+  phone                String?
+  avatarUrl            String?
+  role                 UserRole   @default(EMPLOYEE)
+  isActive             Boolean    @default(true)
+  lastLoginAt          DateTime?
+  refreshToken         String?
+  passwordResetToken   String?
+  passwordResetExpires DateTime?
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+
+  tenant              Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  employee            Employee?          @relation("UserEmployee", fields: [employeeId], references: [id])
+  employeeId          String?            @unique @db.Uuid
+  approvedAttendances Attendance[]      @relation("ApprovedBy")
+  approvedOvertimes   OvertimeRequest[] @relation("OvertimeApprovedBy")
+  auditLogs           AuditLog[]
+  sessions            Session[]
+
+  @@index([tenantId])
+  @@index([email])
+  @@map("users")
+}
+
+// ==========================================================================
+// EMPLEADOS
+// ==========================================================================
+
+model Employee {
+  id              String         @id @default(uuid()) @db.Uuid
+  tenantId        String         @db.Uuid
+  code            String?
+  firstName       String
+  lastName        String
+  documentType    String         @default("DNI")
+  documentNumber  String
+  email           String?
+  phone           String?
+  address         String?
+  position        String?
+  department      String?
+  hireDate        DateTime       @default(now())
+  terminationDate DateTime?
+  status          EmployeeStatus @default(ACTIVE)
+  photoUrl        String?
+  emergencyContact String?
+  emergencyPhone  String?
+  notes           String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user               User?              @relation("UserEmployee")
+  attendances        Attendance[]
+  projectAssignments ProjectAssignment[]
+  workScheduleId     String?             @db.Uuid
+  workSchedule       WorkSchedule?       @relation(fields: [workScheduleId], references: [id])
+  overtimeRequests   OvertimeRequest[]
+
+  @@index([tenantId])
+  @@index([documentNumber])
+  @@index([tenantId, status])
+  @@map("employees")
+}
+
+// ==========================================================================
+// HORARIOS LABORALES
+// ==========================================================================
+
+model WorkSchedule {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @db.Uuid
+  name        String
+  description String?
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant    Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  details   WorkScheduleDay[]
+  employees Employee[]
+  geoFence  GeoFence?          @relation("ScheduleGeoFence")
+
+  @@index([tenantId])
+  @@map("work_schedules")
+}
+
+// ==========================================================================
+// DÍAS DEL HORARIO LABORAL
+// ==========================================================================
+
+model WorkScheduleDay {
+  id             String   @id @default(uuid()) @db.Uuid
+  workScheduleId String   @db.Uuid
+  dayOfWeek      Int
+  startTime      String
+  endTime        String
+  graceMinutes   Int      @default(15)
+  isWorkingDay   Boolean  @default(true)
+  breakStart     String?
+  breakEnd       String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  workSchedule WorkSchedule @relation(fields: [workScheduleId], references: [id], onDelete: Cascade)
+
+  @@index([workScheduleId])
+  @@unique([workScheduleId, dayOfWeek])
+  @@map("work_schedule_days")
+}
+
+// ==========================================================================
+// CERCA VIRTUAL (GEOFENCE)
+// ==========================================================================
+
+model GeoFence {
+  id             String   @id @default(uuid()) @db.Uuid
+  tenantId       String   @db.Uuid
+  name           String
+  address        String?
+  latitude       Float
+  longitude      Float
+  radius         Float    @default(100)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  workSchedule   WorkSchedule? @relation("ScheduleGeoFence", fields: [workScheduleId], references: [id])
+  workScheduleId String?       @unique @db.Uuid
+
+  @@index([tenantId])
+  @@map("geo_fences")
+}
+
+// ==========================================================================
+// PROYECTOS
+// ==========================================================================
+
+model Project {
+  id          String        @id @default(uuid()) @db.Uuid
+  tenantId    String        @db.Uuid
+  name        String
+  code        String?
+  description String?
+  startDate   DateTime?
+  endDate     DateTime?
+  status      ProjectStatus @default(ACTIVE)
+  budget      Decimal?      @db.Decimal(10, 2)
+  color       String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  tenant      Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  assignments ProjectAssignment[]
+  attendances Attendance[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@map("projects")
+}
+
+// ==========================================================================
+// ASIGNACIÓN DE EMPLEADOS A PROYECTOS
+// ==========================================================================
+
+model ProjectAssignment {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @db.Uuid
+  projectId  String   @db.Uuid
+  employeeId String   @db.Uuid
+  role       String?
+  startDate  DateTime @default(now())
+  endDate    DateTime?
+  isActive   Boolean  @default(true)
+  hourlyRate Decimal?  @db.Decimal(10, 2)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([projectId])
+  @@index([employeeId])
+  @@unique([projectId, employeeId, startDate])
+  @@map("project_assignments")
+}
+
+// ==========================================================================
+// ASISTENCIA - CHECK IN / CHECK OUT
+// ==========================================================================
+
+model Attendance {
+  id              String           @id @default(uuid()) @db.Uuid
+  tenantId        String           @db.Uuid
+  employeeId      String           @db.Uuid
+  projectId       String?          @db.Uuid
+  date            DateTime         @db.Date
+
+  checkIn         DateTime
+  checkInLat      Float?
+  checkInLng      Float?
+  checkInMethod   String           @default("GPS")
+  checkInPhoto    String?
+  checkInAddress  String?
+
+  checkOut        DateTime?
+  checkOutLat     Float?
+  checkOutLng     Float?
+  checkOutMethod  String?
+  checkOutPhoto   String?
+  checkOutAddress String?
+
+  status          AttendanceStatus @default(ON_TIME)
+  workedMinutes   Int?
+  lateMinutes     Int?
+  overtimeMinutes Int?
+  breakMinutes    Int?
+  isComplete      Boolean          @default(false)
+  notes           String?
+
+  approvedById    String?          @db.Uuid
+  approvedAt      DateTime?
+  approvalStatus  String?          @default("PENDING")
+  approvalNotes   String?
+
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  tenant        Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  employee      Employee         @relation(fields: [employeeId], references: [id])
+  project       Project?         @relation(fields: [projectId], references: [id])
+  approvedBy    User?            @relation("ApprovedBy", fields: [approvedById], references: [id])
+  overtimeReqs  OvertimeRequest[]
+
+  @@index([tenantId])
+  @@index([employeeId])
+  @@index([date])
+  @@index([tenantId, date])
+  @@index([employeeId, date])
+  @@index([projectId])
+  @@index([tenantId, employeeId, date])
+  @@map("attendances")
+}
+
+// ==========================================================================
+// SOLICITUDES DE HORAS EXTRAS
+// ==========================================================================
+
+model OvertimeRequest {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenantId        String   @db.Uuid
+  employeeId      String   @db.Uuid
+  attendanceId    String?  @db.Uuid
+  date            DateTime @db.Date
+  startTime       String
+  endTime         String
+  totalMinutes    Int
+  reason          String
+  status          String   @default("PENDING")
+  approvedById    String?  @db.Uuid
+  approvedAt      DateTime?
+  rejectionReason String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  employee    Employee  @relation(fields: [employeeId], references: [id])
+  attendance  Attendance? @relation(fields: [attendanceId], references: [id])
+  approvedBy  User?     @relation("OvertimeApprovedBy", fields: [approvedById], references: [id])
+
+  @@index([tenantId])
+  @@index([employeeId])
+  @@index([status])
+  @@map("overtime_requests")
+}
+
+// ==========================================================================
+// LOGS DE AUDITORÍA
+// ==========================================================================
+
+model AuditLog {
+  id          String      @id @default(uuid()) @db.Uuid
+  tenantId    String      @db.Uuid
+  userId      String?     @db.Uuid
+  action      AuditAction
+  entity      String
+  entityId    String?
+  description String?
+  oldValue    Json?
+  newValue    Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime    @default(now())
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user    User?   @relation(fields: [userId], references: [id])
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@index([entity, entityId])
+  @@map("audit_logs")
+}
+
+// ==========================================================================
+// SESIONES
+// ==========================================================================
+
+model Session {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @db.Uuid
+  refreshToken String   @unique
+  deviceInfo   String?
+  ipAddress    String?
+  userAgent    String?
+  isRevoked    Boolean  @default(false)
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([refreshToken])
+  @@index([expiresAt])
+  @@map("sessions")
+}
