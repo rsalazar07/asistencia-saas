@@ -1,0 +1,10 @@
+{
+  "name": "asistencia-saas",
+  "private": true,
+  "scripts": {
+    "build:backend": "cd apps/backend && npm install && npx prisma generate --schema=../../packages/database/prisma/schema.prisma && npm run build",
+    "start:backend": "cd apps/backend && node dist/main",
+    "build:frontend": "cd apps/frontend && npm install && npm run build",
+    "start:frontend": "cd apps/frontend && npm start"
+  }
+}
